@@ -1,6 +1,6 @@
-# How to Use the SQS Queue Monitor
+# How to Use the Queue Monitor
 
-This guide walks you through setting up and using the SQS Queue Monitor to keep an eye on your message queues in real time.
+This guide walks you through setting up and using the SQS Queue Monitor and the RabbitMQ Queue Monitor to keep an eye on your message queues in real time.
 
 ---
 
@@ -9,9 +9,10 @@ This guide walks you through setting up and using the SQS Queue Monitor to keep 
 Before you begin, make sure you have:
 
 - **Python 3.10 or later** installed — check with `python --version`
-- **AWS credentials** configured — the monitor needs permission to read your SQS queues
+- **For the SQS monitor:** AWS credentials configured
+- **For the RabbitMQ monitor:** Access to the RabbitMQ Management API (enabled by default on Amazon MQ)
 
-### AWS Permissions Required
+### AWS Permissions Required (SQS only)
 
 Your AWS user or role needs the following permissions:
 
@@ -50,17 +51,21 @@ pip install -r requirements.txt
 
 ## 3. Try the Demo First
 
-If you'd like to see the dashboard before connecting to AWS, run the demo:
+If you'd like to see the dashboards before connecting to AWS, run a demo:
 
 ```bash
+# SQS demo
 python queue-demo.py
+
+# RabbitMQ demo
+python rabbit-demo.py
 ```
 
-This launches a simulated dashboard with randomised queue data. Press `Ctrl+C` to stop.
+These launch simulated dashboards with randomised queue data. Press `Ctrl+C` to stop.
 
 ---
 
-## 4. Monitor Your Queues
+## 4. Monitor Your SQS Queues
 
 ### Option A: Monitor specific queues by URL
 
@@ -200,3 +205,127 @@ Press **Ctrl+C** at any time to stop the monitor cleanly.
 | "Failed to fetch metrics for …" | Your credentials may lack `sqs:GetQueueAttributes` permission, or the queue may have been deleted. Enable `--log-level DEBUG` for details. |
 | No output / hangs | Verify network connectivity to AWS. Check that your region is correct. |
 | Import errors | Run `pip install -r requirements.txt` to ensure dependencies are installed. |
+
+---
+
+# RabbitMQ Monitor
+
+The following sections cover the RabbitMQ monitor (`rabbit_monitor.py`), designed for Amazon MQ (RabbitMQ engine) or any self-hosted RabbitMQ with the Management plugin enabled.
+
+---
+
+## 11. Connect to Your RabbitMQ Broker
+
+The RabbitMQ monitor connects to the **Management HTTP API** to fetch queue metrics. You need the broker hostname, a management username, and a password.
+
+### Amazon MQ (RabbitMQ)
+
+Find your broker endpoint in the AWS Console: **Amazon MQ → Brokers → select your broker → Connections → RabbitMQ web console URL**. The hostname looks like `b-xxxx-xxxx.mq.eu-west-1.amazonaws.com`.
+
+```bash
+python rabbit_monitor.py \
+  --host b-xxxx-xxxx.mq.eu-west-1.amazonaws.com \
+  --user admin --password secret
+```
+
+Amazon MQ exposes the Management API on port **443** over HTTPS — both are the default, so you don't need to specify them.
+
+### Self-hosted RabbitMQ
+
+For a self-hosted broker with the default management port:
+
+```bash
+python rabbit_monitor.py \
+  --host rabbit.internal --port 15672 --no-tls \
+  --user guest --password guest
+```
+
+---
+
+## 12. Filter Queues
+
+### By vhost
+
+```bash
+python rabbit_monitor.py --host ... --user admin --password secret --vhost /
+```
+
+### By prefix
+
+```bash
+python rabbit_monitor.py --host ... --user admin --password secret --prefix Production-
+```
+
+### By specific names
+
+```bash
+python rabbit_monitor.py --host ... --user admin --password secret \
+  --queues orders notifications analytics
+```
+
+### Combine filters
+
+```bash
+python rabbit_monitor.py --host ... --user admin --password secret \
+  --vhost / --prefix Production-
+```
+
+If you omit all filters, **every queue** on the broker is monitored.
+
+---
+
+## 13. RabbitMQ Alert Thresholds
+
+The dashboard shows a colour-coded status for each queue based on the **ready** message count:
+
+| Status | Default Threshold | Meaning |
+|---|---|---|
+| **HEALTHY** (green) | < 100 messages | Queue is processing normally |
+| **WARNING** (yellow) | >= 100 messages | Messages are building up — investigate |
+| **CRITICAL** (red) | >= 500 messages | Queue is significantly backed up — action required |
+| **NO CONSUMERS** (red) | 0 consumers with messages | No consumers attached — messages are not being processed |
+
+To customise thresholds:
+
+```bash
+python rabbit_monitor.py --host ... --user admin --password secret --warn 50 --critical 200
+```
+
+---
+
+## 14. Reading the RabbitMQ Dashboard
+
+```
+                          RabbitMQ Queue Monitor
+┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ VHost  ┃ Queue               ┃ Ready ┃ Unacked ┃ Total ┃ Consumers ┃ Pub/s ┃ Del/s ┃ Status       ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━┩
+│ /      │ Production-Orders   │    12 │       3 │    15 │         3 │  12.4 │  11.8 │ HEALTHY      │
+│ /      │ Production-Emails   │   142 │       8 │   150 │         2 │   8.1 │   5.3 │ WARNING      │
+│ /      │ Production-Deadltr  │    35 │       0 │    35 │         0 │   0.2 │   0.0 │ NO CONSUMERS │
+└────────┴─────────────────────┴───────┴─────────┴───────┴───────────┴───────┴───────┴──────────────┘
+```
+
+| Column | What It Means |
+|---|---|
+| **VHost** | RabbitMQ virtual host (shown when monitoring all vhosts) |
+| **Queue** | The queue name |
+| **Ready** | Messages waiting to be consumed |
+| **Unacked** | Messages delivered to a consumer but not yet acknowledged |
+| **Total** | Ready + Unacked |
+| **Consumers** | Number of active consumers on the queue |
+| **Pub/s** | Publish rate — messages arriving per second |
+| **Del/s** | Deliver/get rate — messages being consumed per second |
+| **Status** | Health indicator based on ready count, consumer count, and your thresholds |
+
+---
+
+## 15. RabbitMQ Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| Connection refused / timeout | Verify the hostname, port, and that your network can reach the Management API. For Amazon MQ, check the broker's security group allows inbound on port 443. |
+| 401 Unauthorized | Check your username and password. Amazon MQ credentials are set when the broker is created. |
+| SSL certificate errors | For self-signed certs, use `--no-verify`. For Amazon MQ this should not be needed. |
+| Empty dashboard | Ensure queues exist. Try without `--vhost`, `--prefix`, or `--queues` to see all queues. |
+| Import errors | Run `pip install -r requirements.txt` to ensure `requests` and `rich` are installed. |
